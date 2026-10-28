@@ -15,86 +15,174 @@
 
 
 
+# without session use this code 
 
 
+# import os
+# import json
 
-import os
+# from django.shortcuts import render
+# from django.http import JsonResponse
+# from django.views.decorators.http import require_POST
+# from django.views.decorators.csrf import csrf_protect
+# from dotenv import load_dotenv
+# from groq import Groq
+# import logging
+# logger = logging.getLogger(__name__)
+
+# load_dotenv()
+
+
+# def index(request):
+#     return render(request, "index.html")
+
+
+# @require_POST
+# @csrf_protect
+# def chat(request):
+#     print("hit chat request ...")
+#     try:
+#         data = json.loads(request.body)
+#         print("request",data)
+#         message = data.get("message", "").strip()
+
+#         if not message:
+#             return JsonResponse(
+#                 {"error": "Please enter a message."},
+#                 status=400
+#             )
+
+#         if len(message) > 4000:
+#             return JsonResponse(
+#                 {"error": "Message is too long."},
+#                 status=400
+#             )
+
+#         api_key = os.getenv("GROQ_API_KEY")
+#         # print("api_key:",api_key)
+#         if not api_key:
+#             return JsonResponse(
+#                 {"error": "GROQ_API_KEY is missing in .env"},
+#                 status=500
+#             )
+
+#         client = Groq(api_key=api_key)
+
+#         completion = client.chat.completions.create(
+#             model="openai/gpt-oss-120b",
+#             messages=[
+#                 {
+#                     "role": "system",
+#                     "content": (
+#                         "You are a helpful AI assistant. "
+#                         "Reply in the language used by the user."
+#                     )
+#                 },
+#                 {"role": "user", "content": message}
+#             ],
+#             max_completion_tokens=1000
+#         )
+
+#         reply = completion.choices[0].message.content
+
+#         return JsonResponse({"reply": reply})
+
+#     except json.JSONDecodeError:
+#         return JsonResponse(
+#             {"error": "Invalid JSON request."},
+#             status=400
+#         )
+#     except Exception:
+#         logger.exception("Groq chatbot request failed")
+#         return JsonResponse(
+#             {"error": "Chat request failed. Check API key, model and server logs."},
+#             status=500
+#         )
+
+
+## this code use with session 
+
+
+# home/views.py
+
 import json
+import os
 
-from django.shortcuts import render
 from django.http import JsonResponse
+from django.shortcuts import render
 from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_protect
-from dotenv import load_dotenv
 from groq import Groq
-import logging
-logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
-def index(request):
+def home(request):
     return render(request, "index.html")
 
 
 @require_POST
-@csrf_protect
 def chat(request):
-    print("hit chat request ...")
     try:
         data = json.loads(request.body)
-        print("request",data)
-        message = data.get("message", "").strip()
+        user_message = data.get("message", "").strip()
 
-        if not message:
+        if not user_message:
             return JsonResponse(
                 {"error": "Please enter a message."},
                 status=400
             )
 
-        if len(message) > 4000:
-            return JsonResponse(
-                {"error": "Message is too long."},
-                status=400
-            )
+        # Current browser session se conversation history lein
+        history = request.session.get("chat_history", [])
 
-        api_key = os.getenv("GROQ_API_KEY")
-        # print("api_key:",api_key)
-        if not api_key:
-            return JsonResponse(
-                {"error": "GROQ_API_KEY is missing in .env"},
-                status=500
-            )
+        # Groq API ko current message aur previous context bhejein
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful AI assistant. "
+                    "Use previous messages in this conversation "
+                    "to answer follow-up questions."
+                ),
+            },
+            *history,
+            {"role": "user", "content": user_message},
+        ]
 
-        client = Groq(api_key=api_key)
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-        completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful AI assistant. "
-                        "Reply in the language used by the user."
-                    )
-                },
-                {"role": "user", "content": message}
-            ],
-            max_completion_tokens=1000
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=messages,
         )
 
-        reply = completion.choices[0].message.content
+        answer = response.choices[0].message.content or ""
 
-        return JsonResponse({"reply": reply})
+        # User aur assistant dono messages session mein save karein
+        history.extend([
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": answer},
+        ])
 
-    except json.JSONDecodeError:
-        return JsonResponse(
-            {"error": "Invalid JSON request."},
-            status=400
-        )
+        # Sirf recent 20 messages rakhein
+        request.session["chat_history"] = history[-20:]
+        request.session.modified = True
+
+        return JsonResponse({"reply": answer})
+
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"error": "Invalid request."}, status=400)
+
     except Exception:
-        logger.exception("Groq chatbot request failed")
+        # API key ya internal server details user ko expose na karein
         return JsonResponse(
-            {"error": "Chat request failed. Check API key, model and server logs."},
-            status=500
+            {"error": "Chat service error. Please try again."},
+            status=500,
         )
+
+
+@require_POST
+def new_chat(request):
+    # Current session ki conversation history delete karein
+    request.session.pop("chat_history", None)
+    request.session.modified = True
+
+    return JsonResponse({"success": True, "message": "New chat started."})
